@@ -1,13 +1,15 @@
 CLUSTER_IP=$1
-DOCKERHUB_USER=$2
-DOCKERHUB_PASS=$3
+ROUTING_SUFFIX=$CLUSTER_IP.nip.io
 CLUSTER_USER=admin
-GOPATH=/home/ec2-user
 KUBE_INCUBATOR_DIR=$GOPATH/src/github.com/kubernetes-incubator
 SERVICE_CAT_REPO=https://www.github.com/kubernetes-incubator/service-catalog.git
 SERVICE_CAT_DIR=$KUBE_INCUBATOR_DIR/service-catalog
-APISERVER_IMG="quay.io/kubernetes-service-catalog/apiserver:canary"
-CONTROLLER_MANAGER_IMG="quay.io/kubernetes-service-catalog/controller-manager:canary"
+APISERVER_IMG="docker.io/ansibleplaybookbundle/apiserver:latest"
+CONTROLLER_MANAGER_IMG="docker.io/ansibleplaybookbundle/controller-manager:latest"
+TARGET_PROJECT=foo
+ASB_BRANCH=master
+
+oc cluster up --routing-suffix=$ROUTING_SUFFIX
 
 # Launch oc cluster up create user with cluster root
 /shared/create_cluster_user.sh $CLUSTER_USER
@@ -42,17 +44,17 @@ until oc get pods | grep -qiEm1 "apiserver.*?running"; do : ; done
 API_SRV_IP=$(/shared/get_apiserver_ip.sh)
 SERVICE_CAT_ENDPOINT="$API_SRV_IP:8081"
 echo "Service Catalog Endpoint: $SERVICE_CAT_ENDPOINT"
-mkdir -p /home/ec2-user/.kube
+mkdir /home/vagrant/.kube
 cat /shared/kubeconfig.templ.yaml | sed "s|{{SERVICE_CATALOG_ENDPOINT}}|$SERVICE_CAT_ENDPOINT|" \
-  > /home/ec2-user/.kube/service-catalog.config
-chown -R ec2-user:ec2-user /home/ec2-user/.kube
+  > /home/vagrant/.kube/service-catalog.config
+chown -R vagrant:vagrant /home/vagrant/.kube
 
 # Bring up broker
-mkdir -p $GOPATH/src/github.com/fusor
-cd $GOPATH/src/github.com/fusor
-git clone https://github.com/fusor/ansible-service-broker.git
+mkdir -p $GOPATH/src/github.com/openshift
+cd $GOPATH/src/github.com/openshift
+git clone https://github.com/openshift/ansible-service-broker.git
+pushd ansible-service-broker && git checkout $ASB_BRANCH && popd
 cd ansible-service-broker/scripts/asbcli
-git checkout forced-async-prov
 pip install -r ./requirements.txt
 ./asbcli up $CLUSTER_IP:8443 \
   --cluster-user=admin --cluster-pass=admin \
@@ -64,19 +66,19 @@ until oc get pods | grep -iEm1 "etcd.*?running" | grep -v deploy; do : ; done
 sleep 20
 
 ASB_ROUTE=$(oc get routes | grep ansible-service-broker | awk '{print $2}')
+echo "export ASB_ROUTE=$ASB_ROUTE" >> /etc/profile
 echo "Ansible Service Broker Route: $ASB_ROUTE"
 echo "Bootstrapping broker..."
 curl -X POST $ASB_ROUTE/v2/bootstrap
 echo "Successfully bootstrapped broker!"
-echo "export ASB_ROUTE=$ASB_ROUTE" >> /etc/profile
-cat /shared/broker.templ.yaml | sed "s|{{ASB_ROUTE}}|$ASB_ROUTE|" \
-  > /home/ec2-user/broker.yaml
 
-cd /home/ec2-user
-# Download kubectl 1.6 and move to bin
-curl -o kubectl https://storage.googleapis.com/kubernetes-release/release/v1.6.0-beta.3/bin/linux/amd64/kubectl
-chmod +x kubectl
-mv kubectl /usr/bin/
+# Resource defs
+cat /shared/broker.templ.yaml | sed "s|{{ASB_ROUTE}}|$ASB_ROUTE|" \
+  > /home/vagrant/broker.yaml
+oc new-project $TARGET_PROJECT
+cp /shared/binding.yaml /home/vagrant
+cp /shared/instance.yaml /home/vagrant
+chown vagrant:vagrant /home/vagrant/{binding,instance,broker}.yaml
 
 echo "============================================================"
 echo "Cluster: $CLUSTER_IP:8443"
@@ -98,4 +100,4 @@ echo "============================================================"
 
 # Setup alias to use service-catalog apiserver with kubectl
 cp /shared/catctl.profile.sh /etc/profile.d
-echo "source <(oc completion bash)" > /home/ec2-user/.bash_profile
+echo "source <(oc completion bash)" > /home/vagrant/.bash_profile
