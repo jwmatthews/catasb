@@ -1,0 +1,400 @@
+---
+  - set_fact:
+      openshift_build_type: "mac"
+      kube_build_type: "darwin"
+      openshift_release_ext: "zip"
+    when: ansible_os_family == "Darwin"
+
+  - set_fact:
+      openshift_build_type: "linux-64bit"
+      kube_build_type: "linux"
+      openshift_release_ext: "tar.gz"
+    when: (ansible_os_family == "RedHat") or
+          (ansible_distribution == "Ubuntu") or
+          (ansible_distribution == "Archlinux")
+
+  - set_fact:
+      oc_tools_dir: /usr/bin
+    when: ec2_install
+
+  - set_fact:
+      oc_tools_dir: "{{ ansible_env.HOME }}/bin"
+    when: not ec2_install
+
+  - set_fact:
+      oc_cmd: "{{ oc_tools_dir }}/oc"
+
+  - set_fact:
+      oadm_cmd: "{{ oc_tools_dir }}/oc adm"
+
+  - set_fact:
+      kubectl_cmd: "{{ oc_tools_dir }}/kubectl"
+
+  - set_fact:
+      openshift_client: "{{ openshift_clients[openshift_client_version] }}"
+
+  - set_fact:
+      openshift_client_release: "{{ openshift_client.release_ver}}-{{ openshift_build_type }}"
+
+  - set_fact:
+      openshift_client_release_file: "{{ openshift_client_release }}.{{ openshift_release_ext }}"
+
+  - set_fact:
+      openshift_release_url: "{{openshift_client.url}}"
+
+  - set_fact:
+      openshift_client_release_url: "{{ openshift_release_url }}/{{ openshift_client_release_file }}"
+      kube_ctl_url: "https://storage.googleapis.com/kubernetes-release/release/v1.6.0/bin/{{ kube_build_type }}/amd64/kubectl"
+
+  - package:
+      name: "libselinux-python"
+      state: installed
+    become: true
+    when: ansible_os_family == "RedHat"
+
+  - file:
+      path: "{{ oc_tools_dir }}"
+      state: directory
+      mode: 0755
+
+  # Download oc client from release
+  - block:
+
+    - debug:
+        var: openshift_client_release_url
+
+    - name: Delete previous downloaded client (readonly) file
+      file:
+        path: /tmp/{{ openshift_client_release_file }}
+        state: absent
+
+    - name: Delete previous decompressed client folder
+      file:
+        path: /tmp/{{ openshift_client_release }}
+        state: absent
+
+    - name: Download oc binary "{{ openshift_client_release_url }}"
+      get_url:
+        url: "{{ openshift_client_release_url }}"
+        dest: /tmp/{{ openshift_client_release_file }}
+        mode: 0440
+        force: yes
+
+    - name: Extract zip archive
+      unarchive: src=/tmp/{{ openshift_client_release_file }} dest=/tmp copy=no
+      when: openshift_release_ext == "zip"
+
+    - name: Untar {{ openshift_client_release_file }}
+      shell: tar -xzf /tmp/{{ openshift_client_release_file }} -C /tmp
+      when: openshift_release_ext == "tar.gz"
+
+    - name: Install oc
+      copy:
+        remote_src: True
+        src: "/tmp/{{ openshift_client_release }}/oc"
+        dest: "{{ oc_tools_dir }}/oc"
+        mode: 0755
+      when: openshift_release_ext == "zip"
+
+    - name: Install oc
+      copy:
+        remote_src: True
+        src: /tmp/{{ openshift_client_release }}/oc
+        dest: "{{ oc_tools_dir }}/oc"
+        mode: 0755
+      when: openshift_release_ext == "tar.gz"
+
+    when: not local_oc_client
+  # end block
+
+  - name: Checking version of oc client
+    shell: "{{ oc_cmd }} version"
+    register: oc_version_output
+    ignore_errors: yes
+
+  - debug:
+      msg: "{{ oc_version_output.stdout_lines }}"
+
+  - name: Download kube_ctl, "{{ kube_ctl_url }}"
+    get_url:
+      url: "{{ kube_ctl_url }}"
+      dest: "{{ oc_tools_dir }}/kubectl"
+      mode: 0755
+    register: get_kubernetes_client_release
+
+  - name: Resetting cluster
+    shell: "{{ oc_cmd }} cluster down"
+    when: reset_cluster
+
+  - name: Remove {{ oc_host_config_dir }} when resetting cluster
+    file:
+      path: "{{ oc_host_config_dir }}"
+      state: absent
+    become: true
+    when: reset_cluster
+
+  - name: Install docker through pip as it's a requirement of ansible docker module
+    pip:
+      name: docker
+      version: 2.3.0
+    become: 'true'
+    when: ansible_os_family != "RedHat"
+
+  - name: Create ASB repo for EL7
+    yum_repository:
+      name: "ansible-service-broker"
+      description: "Ansible Service Broker"
+      baseurl: "https://copr-be.cloud.fedoraproject.org/results/@ansible-service-broker/ansible-service-broker-latest/epel-7-$basearch/"
+      enabled: yes
+      gpgcheck: no
+    become: true
+    when: (ansible_distribution == 'CentOS' or ansible_distribution == 'RedHat') and
+          ansible_distribution_major_version == "7"
+
+  - name: Enable ASB repo for Fedora 25
+    shell: dnf -y copr enable @ansible-service-broker/ansible-service-broker-latest
+    become: true
+    when: ansible_distribution == 'Fedora' and ansible_distribution_major_version == "25"
+
+  - name: Install docker through yum as it's a requirement of ansible docker module
+    package:
+      name: python2-docker
+      state: installed
+    become: 'true'
+    when: ansible_os_family == "RedHat"
+
+  - name: Removing certain docker images if they exist so we are sure we are pulling latest
+    docker_image:
+      name: "{{ item.img }}"
+      state: absent
+      tag: "{{ item.tag }}"
+      force: true
+    with_items:
+      - "{{ docker_images_group1 }}"
+    when: remove_docker_images
+
+  - name: Pulling all docker images we require
+    docker_image:
+      name: "{{ item.img }}"
+      state: present
+      tag: "{{ item.tag }}"
+    with_items:
+      - "{{ docker_images_group1 }}"
+      - "{{ docker_images_group2 }}"
+
+  - name: Pull additional docker images for 3.9+
+    docker_image:
+      name: "{{ item.img }}"
+      state: present
+      tag: "{{ item.tag }}"
+    with_items:
+      - "{{ docker_images_group3 }}"
+    when:
+    - not(rcm) and (origin_image_tag == "latest" or "v3.9" in origin_image_tag)
+
+  - stat:
+      path: "{{ oc_host_config_dir }}/master/master-config.yaml"
+    register: master_config_stat
+
+  - stat:
+      path: "{{ oc_host_config_dir }}/console-fullchain.pem"
+    register: console_ssl_stat
+
+  - name: Check to see if we need to use a custom config
+    set_fact:
+      use_custom_config: "{{ use_ssl or update_cgroup_driver }}"
+
+  - name: Check to see if we need to regenerate the custom config because something is missing
+    set_fact:
+      generate_config: "{{ use_custom_config and (not master_config_stat.stat.exists or not console_ssl_stat.stat.exists) }}"
+
+  - name: Create command line for oc cluster up execution
+    set_fact:
+      oc_cluster_up_cmd: >-
+        {{ oc_cmd }} cluster up
+        --routing-suffix={{ openshift_routing_suffix }}
+        --public-hostname={{ hostname }}
+        --host-pv-dir={{ persistedvol_mount_point }}
+        --image={{ origin_image_name }}
+        --version={{ origin_image_tag }}
+        {% if use_custom_config %}--host-config-dir={{ oc_host_config_dir }}{% endif %}
+        --service-catalog=true
+
+  - name: Add proxy options to oc cluster up command
+    set_fact:
+      oc_cluster_up_cmd: "{{ oc_cluster_up_cmd }} --http-proxy='http://{{ proxy_private_ip }}:3128' --https-proxy='http://{{ proxy_private_ip }}:3128'"
+    when: ec2_use_proxy and ec2_install
+
+  - debug:
+      var: use_custom_config
+
+  - debug:
+      var: generate_config
+
+  - debug:
+      msg: "Looking at oc cluster up command:  '{{ oc_cluster_up_cmd }}'"
+
+  - name: Ensure {{ persistedvol_mount_point }} directory exists if running in local mode
+    file:
+      path: "{{ persistedvol_mount_point }}"
+      state: directory
+      mode: 0755
+    become: 'true'
+    when: not ec2_install
+
+  # Below is intended to help with re-runs and cleaning up
+  # Note for macOS we can not just delete the persistent volume directory and recreate
+  # For mac, the persistent volume directory is shared into the vm running docker
+  # deleting the persistent volume directory interferes and breaks the share to the VM
+  - name: clear out persistent volumes if they exist
+    shell: |
+      for dir in `ls {{ persistedvol_mount_point }}/ | grep 'pv\|registry'`; do
+        rm -rf {{ persistedvol_mount_point}}/$dir/* ; done
+    when: persistedvol_mount_point != "/"
+    become: true
+
+  - name: Adjust any existing directories under persistent volume to have permissions 777
+    file:
+      path: "{{ persistedvol_mount_point }}"
+      mode: 0777
+      recurse: true
+    become: true
+
+  # Intent of this oc cluster up is generate the master-config.yaml so we can make edits to it
+  - name: Run oc cluster up to generate master-config.yaml
+    shell: "{{ oc_cluster_up_cmd }}"
+    ignore_errors: yes
+    when: generate_config
+
+  # Shut down cluster and use the generated master-config.yaml so we can make edits to it
+  - name: Run oc cluster down
+    shell: "{{ oc_cmd }} cluster down"
+    when: generate_config
+
+  - name: Copy credentials into host dir
+    copy:
+      remote_src: True
+      src: /tmp/console-fullchain.pem
+      dest: "{{ oc_host_config_dir }}/console-fullchain.pem"
+      owner: root
+      group: root
+      mode: 0644
+    when: generate_config and use_ssl == True
+
+  - name: Copy credentials into host dir
+    copy:
+      remote_src: True
+      src: /tmp/console-privkey.pem
+      dest: "{{ oc_host_config_dir }}/console-privkey.pem"
+      owner: root
+      group: root
+      mode: 0644
+    when: generate_config and use_ssl == True
+
+  - name: Edit master-config servingInfo.namedCertificates to use SSL
+    lineinfile:
+      dest: "{{ oc_host_config_dir }}/master/master-config.yaml"
+      regexp: "namedCertificates: null"
+      line: "  namedCertificates:\n    - certFile: /var/lib/origin/openshift.local.config/console-fullchain.pem\n      keyFile: /var/lib/origin/openshift.local.config/console-privkey.pem\n      names:\n      - \"{{ hostname }}\"\n"
+    when: generate_config and use_ssl == True
+    become: 'true'
+
+  - name: Edit node config cgroup-driver
+    become: true
+    lineinfile:
+      dest: "{{ oc_host_config_dir }}/node-localhost/node-config.yaml"
+      regexp: "kubletArguments:\n  fail-swap-on:\n  - \"false\""
+      line: "kubeletArguments:\n  fail-swap-on:\n  - \"false\"\n  cgroup-driver:\n  - \"cgroupfs\"\n"
+    when: update_cgroup_driver
+
+  - name: Install python-passlib
+    package:
+      name: python-passlib
+      state: installed
+    become: 'true'
+    when: use_ssl == True
+
+  - name: Create htpasswd file for cluster user auth
+    htpasswd:
+      path: "{{ cluster_auth_htpasswd_file }}"
+      name: "{{ cluster_user }}"
+      password: "{{ cluster_user_password }}"
+      owner: root
+      group: root
+      mode: 0640
+    become: 'true'
+    when: use_ssl == True
+
+  - name: Copy update_oauth_provider_to_htpasswd.py
+    copy:
+      src: update_oauth_provider_to_htpasswd.py
+      dest: /tmp/update_oauth_provider_to_htpasswd.py
+      owner: root
+      group: root
+      mode: 0755
+    when: use_ssl == True
+
+  - name: Update master-config.yaml with htpasswd file
+    shell: "/tmp/update_oauth_provider_to_htpasswd.py {{ cluster_master_config_file }} {{ cluster_auth_htpasswd_file }}"
+    when: use_ssl == True
+
+  - name: Update oc cluster up command to use --use-existing-config
+    set_fact:
+      oc_cluster_up_cmd: "{{ oc_cluster_up_cmd }} --use-existing-config"
+    when: use_custom_config
+
+  - debug:
+      msg: "Looking at oc cluster up command:  '{{ oc_cluster_up_cmd }}'"
+
+  - name: Run oc cluster up to start the cluster
+    shell: "{{ oc_cmd }} cluster down && {{ oc_cluster_up_cmd }}"
+    register: oc_cluster_up
+    retries: 5
+    delay: 10
+    until: oc_cluster_up.rc == 0
+  #
+  # Add permissions to desired openshift user
+  # Would be nice if we looked at existing users and permissions and made decisions of what to run
+  # for now, will only run these if we've run oc cluster up
+  #
+  - name: Login as {{ cluster_system_admin }}
+    shell: "{{ oc_cmd }} login -u {{ cluster_system_admin }}"
+    when: oc_cluster_up.changed
+
+  - name: Create user {{ cluster_user }}
+    shell: "{{ oc_cmd }} create user {{ cluster_user }}"
+    when: oc_cluster_up.changed
+
+  - name: Add cluster-admin role to {{ cluster_user }}
+    shell: "{{ oc_cmd }} adm policy add-cluster-role-to-user cluster-admin {{ cluster_user }}"
+    when: oc_cluster_up.changed
+
+  - name: Add privileged scc to {{ cluster_user }}
+    shell: "{{ oc_cmd }} adm policy add-scc-to-user privileged {{ cluster_user }}"
+    when: oc_cluster_up.changed
+
+  - name: Add anyuid scc to system:authenticated
+    shell: "{{ oc_cmd }} adm policy add-scc-to-group anyuid system:authenticated"
+    when: oc_cluster_up.changed and scc_anyuid == True
+
+  - name: Login as {{ cluster_user }}
+    shell: "{{ oc_cmd }} login -u {{ cluster_user }} -p {{ cluster_user_password }} {{ cluster_url }} --insecure-skip-tls-verify=true"
+    when: oc_cluster_up.changed
+
+  - name: Get the name for service-catalog project
+    shell: "{{ oc_cmd }} get projects --no-headers | grep 'service-catalog' | awk '{ printf \"%s\", $1}'"
+    register: oc_sc_project
+
+  - name: Save name for service-catalog project
+    set_fact:
+      oc_service_catalog: "{{ oc_sc_project.stdout }}"
+
+  - debug:
+      msg: "Looking at service-catalog project name {{ oc_service_catalog }}"
+
+  - name: Fail if service-catalog project does not exit
+    fail:
+      msg: "Failed to get the service-catalog project"
+    when: oc_service_catalog == ""
+
+  - include: env_hacks.yml

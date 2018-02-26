@@ -1,0 +1,93 @@
+---
+# Override any and all Ansible variables when running catasb setup scripts.
+
+# For convenience you can skip being prompted for these vars by storing them here.
+dockerhub_org: ansibleplaybookbundle
+
+# Dockerhub username/password are now only required if you are using a private repository
+# dockerhub_user_name: example_user
+# Omit this unless you want to store your password in plain text to skip prompts.
+# dockerhub_user_password: example_password
+
+# To use openshift origin latest, uncomment these lines:
+# origin_image_tag: latest
+# openshift_client_version: latest
+
+# broker_tag controls what version of ansible broker to deploy
+# defaults to "latest", use "canary" if you want to test latest built code from master
+# broker_tag: "latest"
+# broker_tag: "canary"
+
+# You can override other variables as needed.  For example to change your OpenShift hostname
+# you can modify the hostname and suffix here:
+# hostname: 172.17.0.1
+# openshift_routing_suffix: 172.17.0.1.nip.io
+
+# Default to the "anyuid" scc for pod deployments.
+# scc_anyuid: true
+
+# Use the quay.io canary images for bleeding edge development.
+# coalmine: true
+
+# Override the service-catalog's apiserver + controller images.
+# coalmine_apiserver: quay.io/kubernetes-service-catalog/apiserver:canary
+# coalmine_controller: quay.io/kubernetes-service-catalog/controller-manager:canary
+
+
+# The default tag to use for apb's is latest. To change that you can set this option.
+# apbtag: nightly
+# apbtag: canary
+
+# Ansible service broker configuration settings. Enable to allow local APB deployments
+# via `apb push`:
+# broker_enable_basic_auth: false
+# broker_bootstrap_refresh_interval: 31536000s
+
+# Disable SSL.
+# use_ssl: false
+
+# Select AWS region and AMI for EC2 deployments.
+# us-east-1
+# aws_region: us-east-1
+# aws_ami_id: ami-b63769a1
+# us-east-2
+# aws_region: us-east-2
+# aws_ami_id: ami-0932686c
+# us-west-1
+# aws_region: us-west-1
+# aws_ami_id: ami-2cade64c
+# us-west-2
+# aws_region: us-west-2
+# aws_ami_id: ami-6f68cf0f
+# ca-central-1
+# aws_region: ca-central-1
+# aws_ami_id: ami-9062d0f4
+
+
+# Enable ec2_use_proxy to tunnel outgoing OpenShift traffic through a squid proxy
+# ec2_use_proxy: True
+# ec2_proxy_instance_type: m4.large
+
+#
+# Deploy AWS Broker
+# Note: You may set BOTH 'deploy_awsservicebroker' AND 'deploy_asb' to 'True'
+#       However, if both are set to 'True', besure that
+#       'dockerhub_org' and 'awsservicebroker_dockerhub_org' are NOT the same
+#
+# awsservicebroker_broker_template_dir: "/git/awsservicebroker/deploy_scripts"
+# deploy_asb: False    # True/False
+# deploy_awsservicebroker: True  # True/False
+# awsservicebroker_dockerhub_org: awsservicebroker
+# awsservicebroker_broker_image_name: "docker.io/{{ awsservicebroker_dockerhub_org }}/aws-service-broker"
+# awsservicebroker_broker_tag: "latest"
+# awsservicebroker_asb_template_s3_url: "https://s3.amazonaws.com/awsservicebroker/scripts/deploy-awsservicebroker.template.yaml"
+
+# The default tag to use for AWS apb's is latest. To change that you can set this option.
+# awsservicebroker_apbtag: nightly
+# awsservicebroker_apbtag: canary
+
+# EC2 Instance Type - 't2.medium' or higher is recommended
+# instance_type: c4.4xlarge
+
+# AWS CloudFormation Role ARN Name
+# aws_role_arn_name: "aws-broker-cloudformation"
