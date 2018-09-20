@@ -236,7 +236,7 @@
       force: yes
       tag: "{{ item.tag }}"
     with_items:
-      - "{{ docker_images_group5 }}"
+      - "{{ docker_images_group6 }}"
     when: (not(rcm)) or
           ("v3.7" in origin_image_tag) or
           ("v3.9" in origin_image_tag)
