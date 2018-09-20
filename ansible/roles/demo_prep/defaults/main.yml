@@ -1,0 +1,3 @@
+demo_project_name: aws-demo
+default_db_username: dbuser
+default_db_password: dbpasswd

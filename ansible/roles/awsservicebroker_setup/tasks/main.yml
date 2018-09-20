@@ -1,0 +1,236 @@
+---
+  - debug: var=awsservicebroker_dockerhub_org
+
+  - set_fact:
+      oc_tools_dir: /usr/bin
+    when: ec2_install
+
+  - set_fact:
+      oc_tools_dir: "{{ ansible_env.HOME }}/bin"
+    when: not ec2_install
+
+  - set_fact:
+      oc_cmd: "{{ oc_tools_dir }}/oc"
+
+  - name: Download the AWS Broker Template File to "{{ awsservicebroker_broker_template_dir }}/{{ awsservicebroker_asb_template_filename }}"
+    get_url:
+      url: "{{ awsservicebroker_asb_template_s3_url }}"
+      dest: "{{ awsservicebroker_broker_template_dir }}/{{ awsservicebroker_asb_template_filename }}"
+      force: True
+
+  # Verify that the template file 'awsservicebroker_asb_template_filename' exists
+  - stat:
+      path: "{{ awsservicebroker_broker_template_dir }}/{{ awsservicebroker_asb_template_filename }}"
+    register: stat_result
+  - name: Check that the AWS Broker Template File '{{ awsservicebroker_broker_template_dir }}/{{ awsservicebroker_asb_template_filename }}' exists
+    fail:
+      msg: Missing AWS Broker Template File '{{ awsservicebroker_broker_template_dir }}/{{ awsservicebroker_asb_template_filename }}'
+    when: stat_result.stat.exists == False
+
+  - name: Set the name for 'oc_service_catalog' if not already defined
+    set_fact:
+      oc_service_catalog: "kube-service-catalog"
+    when: oc_service_catalog is not defined
+
+  - name: Waiting 1 minutes for service-catalog
+    action: >-
+      shell "{{ oc_cmd }}" get deployments -n {{ oc_service_catalog }} apiserver
+      -o go-template={% raw %}'{{ .status.availableReplicas }}'{% endraw %}
+    register: apiserver_deployment
+    until: apiserver_deployment.stdout == '1'
+    retries: 6
+    delay: 10
+
+  - name: Curling aws-service-broker-all.yaml
+    get_url:
+      url: "{{ awsservicebroker_asb_template_url }}"
+      force: yes
+      dest: "{{ awsservicebroker_local_target_asb_template }}"
+
+  - name: Setting facts for rendering aws-service-broker-all.yaml template
+    set_fact:
+      dockerhub_pass: "{{ dockerhub_user_password }}"
+      dockerhub_user: "{{ dockerhub_user_name }}"
+      dockerhub_org: "{{ awsservicebroker_dockerhub_org }}"
+
+  - debug: var=dockerhub_org
+
+  - name: check if the {{ awsservicebroker_asb_project }} project exists
+    shell: "{{ oc_cmd }} get project --no-headers=true | awk '{ print $1 }' | grep -E '^{{ awsservicebroker_asb_project }}( |$)' | cat"
+    register: project
+
+  - name: get service-catalog-apiserver-token secret name
+    shell: "{{ oc_cmd}} get secret --no-headers=true -n kube-service-catalog | grep -m 1 service-catalog-apiserver-token | awk '{ print $1 }' | cat"
+    register: cat_token_secret_name
+
+  - name: retrieve cert for cluster
+    shell: "{{ oc_cmd}} get secret {{ cat_token_secret_name.stdout }} -n kube-service-catalog -o yaml | grep service-ca.crt | awk '{ print $2 }' | cat"
+    register: cluster_ca_cert
+
+  - debug:
+      msg: "Service Broker must have a CA Bundle set for the AWS Service Broker and Service Catalog to be able to communicate"
+    when: cluster_ca_cert.stdout == "" and openshift_client_version != "3.6"
+
+  - name: create etcd-cert tmp directory
+    file:
+      path: /tmp/etcd-cert
+      state: directory
+    when: etcd_ca_cert is not defined and etcd_client_cert is not defined and etcd_client_key is not defined
+
+  - name: Create self signing ca cert
+    shell: 'openssl req -nodes -x509 -newkey rsa:4096 -keyout /tmp/etcd-cert/key.pem -out /tmp/etcd-cert/cert.pem -days 365 -subj "/CN=asb-etcd.ansible-service-broker.svc"'
+    when: etcd_ca_cert is not defined and etcd_client_cert is not defined and etcd_client_key is not defined
+
+  - name: Create self signed client cert
+    shell: 'openssl genrsa -out /tmp/etcd-cert/MyClient1.key 2048 \
+    && openssl req -new -key /tmp/etcd-cert/MyClient1.key -out /tmp/etcd-cert/MyClient1.csr -subj "/CN=client" \
+    && openssl x509 -req -in /tmp/etcd-cert/MyClient1.csr -CA /tmp/etcd-cert/cert.pem -CAkey /tmp/etcd-cert/key.pem -CAcreateserial -out /tmp/etcd-cert/MyClient1.pem -days 1024'
+    when: etcd_ca_cert is not defined and etcd_client_cert is not defined and etcd_client_key is not defined
+
+  - block:
+    - shell: cat /tmp/etcd-cert/cert.pem
+      register: cat_etcd_ca_cert
+    - set_fact:
+        etcd_ca_cert: "{{ cat_etcd_ca_cert.stdout }}"
+    when: etcd_ca_cert is not defined
+
+  - block:
+    - shell: cat /tmp/etcd-cert/MyClient1.pem
+      register: cat_etcd_client_cert
+    - set_fact:
+        etcd_client_cert: "{{ cat_etcd_client_cert.stdout }}"
+    when: etcd_client_cert is not defined
+
+  - block:
+    - shell: cat /tmp/etcd-cert/MyClient1.key
+      register: cat_etcd_client_key
+    - set_fact:
+        etcd_client_key: "{{ cat_etcd_client_key.stdout }}"
+    when: etcd_client_key is not defined
+
+  - name: Create a new project for the {{ awsservicebroker_asb_project }}
+    shell: "{{ oc_cmd }} new-project {{ awsservicebroker_asb_project }}"
+    register: new_awsservicebroker_asb_project
+    when: project.stdout.find( awsservicebroker_asb_project ) == -1
+
+  - name: Update Broker Kind and Auth when using coalmine
+    set_fact:
+      broker_enable_basic_auth: true
+    when: openshift_client_version == '3.6'
+
+  #################################################################
+  # 'rcm' builds usually use an older branch of the broker
+  # Some features in the deployment template may not be available
+  # If so, do NOT put those commands in this task.
+  # Only use 'rcm' compatible command args here
+  #################################################################
+  - name: Create command line for processing template (rcm compliant)
+    set_fact:
+      cmd_process_asb_template: >-
+        {{ oc_cmd }}
+        process
+        -f {{ awsservicebroker_local_target_asb_template }}
+        -n {{ awsservicebroker_asb_project }}
+        -p BROKER_IMAGE={{ awsservicebroker_broker_image }}
+        -p ETCD_IMAGE={{ etcd_image }}
+        -p ETCD_PATH={{ etcd_path }}
+        -p REGISTRY_TYPE={{ broker_registry_type }}
+        -p REGISTRY_URL={{ broker_registry_url }}
+        -p DEV_BROKER={{ broker_dev_broker }}
+        -p DOCKERHUB_ORG='{{ awsservicebroker_dockerhub_org }}'
+        -p DOCKERHUB_PASS='{{ dockerhub_user_password }}'
+        -p DOCKERHUB_USER='{{ dockerhub_user_name }}'
+        -p LAUNCH_APB_ON_BIND={{ broker_launch_apb_on_bind }}
+        -p OUTPUT_REQUEST={{ broker_output_request }}
+        -p RECOVERY={{ broker_recovery }}
+        -p ROUTING_SUFFIX={{ openshift_routing_suffix }}
+        -p REGISTRY_NAME={{ broker_registry_name }}
+        -p ENABLE_BASIC_AUTH={{ broker_enable_basic_auth }}
+        -p REFRESH_INTERVAL={{ broker_bootstrap_refresh_interval }}
+        -p TAG={{ awsservicebroker_apbtag | default('latest') }}
+        -p SANDBOX_ROLE={{ broker_sandbox_role }}
+        -p IMAGE_PULL_POLICY={{ broker_pull_policy }}
+        -p BROKER_CA_CERT='{{ cluster_ca_cert.stdout }}'
+        -p AUTO_ESCALATE={{ broker_auto_escalate|bool }}
+        -p KEEP_NAMESPACE={{ broker_keep_namespace|bool }}
+        -p KEEP_NAMESPACE_ON_ERROR={{ broker_keep_namespace_on_error|bool }}
+        {% if broker_kind is defined %}-p BROKER_KIND={{ broker_kind }}{% endif %}
+        {% if broker_auth is defined %}-p BROKER_AUTH='{{ broker_auth }}'{% endif %}
+
+  - name: Add etcd authentication if values are defined
+    set_fact:
+      cmd_process_asb_template: >-
+        {{ cmd_process_asb_template }}
+        -p ETCD_TRUSTED_CA_FILE=/var/run/etcd-auth-secret/ca.crt
+        -p BROKER_CLIENT_CERT_PATH=/var/run/aws-asb-etcd-auth/client.crt
+        -p BROKER_CLIENT_KEY_PATH=/var/run/aws-asb-etcd-auth/client.key
+        -p ETCD_TRUSTED_CA='{{ etcd_ca_cert | b64encode }}'
+        -p BROKER_CLIENT_CERT='{{ etcd_client_cert | b64encode }}'
+        -p BROKER_CLIENT_KEY='{{ etcd_client_key | b64encode }}'
+        -p NAMESPACE='{{ awsservicebroker_asb_project }}'
+    when: etcd_ca_cert is defined and etcd_client_cert is defined and etcd_client_key is defined
+
+  ############################################################
+  # Add any commands that aren't compatible with 'rcm here
+  # to use newer features available in newer broker images
+  ############################################################
+  #- name: Modify command if running a non-rcm build to use newer features
+  #  set_fact:
+  #    cmd_process_asb_template: >-
+  #      {{ cmd_process_asb_template }}
+  #      insert new commands that don't work on rcm here
+  #  when: "not rcm"
+
+  - name: Update Broker Kind and Auth when using coalmine
+    set_fact:
+      cmd_process_asb_template: >-
+        {{ cmd_process_asb_template }}
+        -p BROKER_KIND='Broker'
+        -p BROKER_AUTH='{ "basicAuthSecret": { "namespace": "aws-service-broker", "name": "aws-asb-auth-secret" }}'
+    when: (coalmine is undefined or not coalmine) and (openshift_client_version == '3.6')
+
+  - name: Process template "{{ awsservicebroker_local_target_asb_template }}"
+    shell: >
+      {{ cmd_process_asb_template }}
+      &> {{ awsservicebroker_local_target_asb_template_processed }}
+
+  - name: Running oc create on processed template
+    shell: "{{ oc_cmd }} create -f {{ awsservicebroker_local_target_asb_template_processed }}"
+
+  - name: Switch project to {{ awsservicebroker_asb_project }}
+    shell: "{{ oc_cmd }} project {{ awsservicebroker_asb_project }}"
+
+  - name: Set proxied broker vars
+    set_fact:
+      proxied_broker_project: "{{ awsservicebroker_asb_project }}"
+      proxied_broker_container: aws-asb
+    when: ec2_use_proxy and ec2_install
+
+  - name: Configure ASB with egress proxy
+    include_role:
+      name: broker_proxy_setup
+    when: ec2_use_proxy and ec2_install
+
+  - name: Waiting up to 5 minutes for ASB pod
+    action:
+      shell "{{ oc_cmd }}" get pods | grep -iEm1 "asb.*?running" | grep -v deploy | grep -v etcd
+    register: wait_for_asb_pod
+    until: wait_for_asb_pod.rc == 0
+    retries: 60
+    delay: 5
+
+  - name: Get route for aws-service-broker
+    shell: "'{{ oc_cmd }}' get routes | grep aws-service-broker | awk '{print $2}'"
+    register: result_get_route_asb
+    retries: 12
+    delay: 5
+
+  - set_fact:
+      aws_access_key: "{{ lookup('env','AWS_ACCESS_KEY_ID') }}"
+      aws_secret_key: "{{ lookup('env','AWS_SECRET_ACCESS_KEY') }}"
+
+  - name: Create the shared AWS Role ARN
+    include_tasks: create_role_arn.yml
+
+  - include_tasks: create_secrets.yml
+    when: (deploy_awsservicebroker == True) and (aws_access_key != "" and aws_secret_key != "" and aws_cloudformation_role_arn != "")

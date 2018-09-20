@@ -1,0 +1,204 @@
+# CATalogASB Local Deployment
+
+### Overview
+These playbooks will do the following in a local environment:
+  * Setup Origin through `oc cluster up`
+  * Install [Service Catalog](https://github.com/kubernetes-incubator/service-catalog) on Origin
+  * Install [Ansible Service Broker](https://github.com/openshift/ansible-service-broker) on Origin
+
+### Pre-Reqs
+  * Ansible 2.4.0+ installed.
+  * Docker installed and configured
+    * Suggestion, to ease usage we allow our regular user to access the docker server by doing the below:
+
+      * ```sudo groupadd docker```
+      * ```sudo usermod -aG docker $USER```
+      * ```sudo systemctl restart docker```
+
+    * Follow the Docker setup instructions from ```oc cluster up``` documentation to configure the necessary Docker networking settings. Stop before installing the `oc` binary.
+      * https://github.com/openshift/origin/blob/master/docs/cluster_up_down.md#linux
+
+### Execute
+  * Copy `config/my_vars.yml.example` to `config/my_vars.yml` and edit as needed.  You can use the `my_vars.yml` to override any settings.  For example:
+    ```bash
+    $ cp config/my_vars.yml.example config/my_vars.yml
+    $ vim config/my_vars.yml
+    ```
+    * If using a private repository, set `dockerhub_user_name` (and optionally `dockerhub_user_password`) with your own dockerhub username (and password).  This will skip the prompts during execution and makes re-runs easy. A valid dockerhub login is required for the broker to authenticate to dockerhub to search an organization for APBs.
+    * Set `dockerhub_org` to load APB images into your broker from an organization.  For dockerhub organization you may use your own if you pushed your own APBs or you may use the `ansibleplaybookbundle` [organization](https://hub.docker.com/u/ansibleplaybookbundle/) as a sample.
+    * Set `hostname` and `openshift_routing_suffix` if you want to use a different static IP.
+    * Example `my_vars.yml`
+          $ cat local/config/my_vars.yml
+          ---
+
+          dockerhub_user_name: foo@bar.com
+          # dockerhub_user_password: changeme  # if commented out, will prompt
+          dockerhub_org: ansibleplaybookbundle
+  * Navigate to the `local/linux` folder and run the script to set up OpenShift.
+    ```bash
+    $ cd local/linux
+    $ ./run_setup_local.sh
+    ```
+  * Open a Web Browser
+    * Visit: `https://apiserver-service-catalog.CLUSTERIP.nip.io`
+      * Accept the SSL certificate for the apiserver-service-catalog endpoint
+      * Ignore the text that appears and proceed to the main OpenShift URL next
+      * Note: must accept the new SSL cert, each time you reset your OpenShift environment
+    * Visit: `https://<CLUSTERIP>.nip.io:8443`
+      * The <CLUSTERIP> is the same as the one you set in `common_vars`
+
+### Cleanup
+
+* To terminate the local instance run the below
+  ```bash
+  $ oc cluster down
+  ```
+
+* To reset the environment to a clean instance of origin with ASB and Service Catalog run the below
+  ```bash
+  $ ./reset_environment.sh
+  ```
+
+### Testing downstream images
+  * Use the --rcm flag. For instance:
+    * `./run_setup_local.sh --rcm`
+    * `./reset_environment.sh --rcm`
+
+### Tested with
+  * ansible 2.4.1.0
+    * Problems were seen using ansible 2.2 and lower
+
+### Troubleshooting
+
+#### pull() got an unexpected keyword argument 'decode'
+
+```
+Error pulling image docker.io/ansibleplaybookbundle/ansible-service-broker-apb:summit - pull() got an unexpected keyword argument 'decode'
+```
+
+This is a problem with having docker-py installed, and at a specific version. More info in https://github.com/ansible/ansible-modules-core/issues/5515.
+The recommended fix for this is to uninstall docker-py, which needs to be uninstalled:
+For EL7: `sudo yum remove python-docker-py`
+For Fedora: `sudo dnf remove python-docker-py`
+For Others: `sudo pip uninstall docker-py`
+
+#### APBs not visible from OpenShift Web UI
+
+In some cases APBs won't be visible from the OpenShift Console after `./run_setup_local.sh`.
+This can happen when the catalog is unable to talk to the broker due to an issue with iptables.
+
+The recommended fix is to flush iptables rules and reset the catasb environment.
+```
+sudo iptables -F
+./reset_environment.sh
+```
+
+#### Cannot connect to the Docker daemon. Is the docker daemon running on this host
+
+```
+TASK [openshift_setup : Resetting cluster, True]
+ ****************
+"error: cannot communicate with Docker"
+```
+
+This may be a permission issue, we recommend relaxing permissions on docker so your regular user is able to access docker.  The following will allow your regular user to access docker:
+
+  * ```sudo groupadd docker```
+  * ```sudo usermod -aG docker $USER```
+  * ```sudo systemctl restart docker```
+
+#### sudo: a password is required
+
+```
+TASK [openshift_setup : Resetting cluster, True] *********************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [openshift_setup : Install docker through pip as it's a requirement of ansible docker module] *******************************************************************************************************
+fatal: [localhost]: FAILED! => {"changed": false, "failed": true, "module_stderr": "sudo: a password is required\n", "module_stdout": "", "msg": "MODULE FAILURE", "rc": 1}
+	to retry, use: --limit @/home/tsanders/Workspace/catasb/ansible/setup_local_environment.retry
+TASK [openshift_setup : Resetting cluster, True] *********************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [openshift_setup : Install docker through pip as it's a requirement of ansible docker module] *******************************************************************************************************
+fatal: [localhost]: FAILED! => {"changed": false, "failed": true, "module_stderr": "sudo: a password is required\n", "module_stdout": "", "msg": "MODULE FAILURE", "rc": 1}
+	to retry, use: --limit @/home/tsanders/Workspace/catasb/ansible/setup_local_environment.retry
+
+```
+
+We currently run with NOPASSWD configured for sudo, to do the same:
+
+  * ```sudo visudo```
+  * Add this line:
+
+      ```
+      %wheel  ALL=(ALL)       NOPASSWD: ALL
+      ```
+
+#### Error: did not detect an --insecure-registry argument on the Docker daemon
+
+```
+TASK [openshift_setup : Run oc cluster up] ***************************************************************************************************************************************************************
+fatal: [localhost]: FAILED! => {"changed": true, "cmd": "/home/tsanders/bin/oc cluster up --routing-suffix=172.17.0.1.nip.io --public-hostname=172.17.0.1 --tag=latest --host-config-dir=/var/lib/origin/openshift.local.config", "delta": "0:00:00.136821", "end": "2017-06-26 10:32:31.792848", "failed": true, "rc": 1, "start": "2017-06-26 10:32:31.656027", "stderr": "", "stderr_lines": [], "stdout": "Starting OpenShift using openshift/origin:latest ...\n-- Checking OpenShift client ... OK\n-- Checking Docker client ... OK\n-- Checking Docker version ... OK\n-- Checking for existing OpenShift container ... OK\n-- Checking for openshift/origin:latest image ... OK\n-- Checking Docker daemon configuration ... FAIL\n   Error: did not detect an --insecure-registry argument on the Docker daemon\n   Solution:\n\n     Ensure that the Docker daemon is running with the following argument:\n     \t--insecure-registry 172.30.0.0/16", "stdout_lines": ["Starting OpenShift using openshift/origin:latest ...", "-- Checking OpenShift client ... OK", "-- Checking Docker client ... OK", "-- Checking Docker version ... OK", "-- Checking for existing OpenShift container ... OK", "-- Checking for openshift/origin:latest image ... OK", "-- Checking Docker daemon configuration ... FAIL", "   Error: did not detect an --insecure-registry argument on the Docker daemon", "   Solution:", "", "     Ensure that the Docker daemon is running with the following argument:", "     \t--insecure-registry 172.30.0.0/16"]}
+	to retry, use: --limit @/home/tsanders/Workspace/catasb/ansible/setup_local_environment.retry
+
+PLAY RECAP ***********************************************************************************************************************************************************************************************
+localhost                  : ok=25   changed=4    unreachable=0    failed=1
+```
+
+There are several configurations required to run ```oc cluster up```, please be sure to read and follow the ``` oc cluster up``` documentation here:  https://github.com/openshift/origin/blob/master/docs/cluster_up_down.md#linux
+
+#### oc cluster up hangs while starting the cluster
+
+Sometimes catasb will get stuck at starting the cluster phase. It will simply
+sit at this prompt for what seems like years:
+
+```
+TASK [openshift_setup : Run oc cluster up to start the cluster] ***
+```
+
+This usually means `oc cluster up` is failing. There are a number of things you
+need to look at.
+
+* get log output from a stock `oc cluster up`.
+```
+oc cluster up --service-catalog=true --loglevel=10
+```
+
+If this works take note of the origin version it pulled down. You might want to
+use that tag in your `my_vars.yml`. 
+
+* look at your `journalctl -e` output
+
+Any reference to eviction, usually indicates you are in need of more disk space.
+
+```
+Jan 10 09:41:08 speed3 dockerd-current[21270]: W0110 14:41:08.646423   23589 eviction_manager.go:332] eviction manager: attempting to reclaim imagefs
+Jan 10 09:41:08 speed3 dockerd-current[21270]: I0110 14:41:08.646459   23589 helpers.go:1070] eviction manager: attempting to delete unused containers
+Jan 10 09:41:08 speed3 dockerd-current[21270]: I0110 14:41:08.651090   23589 helpers.go:1080] eviction manager: attempting to delete unused images
+```
+
+If your usage percentage is more than 85%, you need to free up more disk space.
+My usage was up to 90% with 49G free. That caused kube to evict pods that were needed
+to start origin cluster.
+
+```
+$ df -h
+Filesystem              Type      Size  Used Avail Use% Mounted on
+devtmpfs                devtmpfs  9.6G     0  9.6G   0% /dev
+tmpfs                   tmpfs     9.6G  100M  9.5G   2% /dev/shm
+tmpfs                   tmpfs     9.6G  2.3M  9.6G   1% /run
+tmpfs                   tmpfs     9.6G     0  9.6G   0% /sys/fs/cgroup
+# exceeds the threshold of 85%
+/dev/mapper/fedora-root ext4      460G  388G   49G  89% /
+tmpfs                   tmpfs     9.6G  258M  9.3G   3% /tmp
+/dev/sda1               ext4      477M  184M  264M  42% /boot
+tmpfs                   tmpfs     2.0G   20K  2.0G   1% /run/user/4
+tmpfs                   tmpfs     2.0G  124K  2.0G   1% /run/user/1000
+```
+
+As can be seen in this origin bug comment:
+
+https://github.com/openshift/origin/issues/18046#issuecomment-358095698
+
+Free up space until you are below the 85%, I went down to 61%. Cluster comes up
+fine.

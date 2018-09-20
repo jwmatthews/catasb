@@ -1,0 +1,39 @@
+---
+  - name: Creating RoleBinding for the Service Catalog
+    shell: kubectl create clusterrolebinding tiller-cluster-admin --clusterrole=cluster-admin --serviceaccount=kube-system:default
+
+  - name: Remove /tmp/service-catalog if it exists
+    file:
+      path: "{{ service_catalog_path }}"
+      state: absent
+    become: true
+
+  - name: Clone Service Catalog Repo
+    shell: "git clone {{ catalog_git }} {{ service_catalog_path }}"
+
+  - name: Create service-catalog start command
+    set_fact:
+      kubernetes_start: >-
+        helm install {{ service_catalog_path }}/charts/catalog
+        --name {{ helm_release_name }}
+        --namespace {{ svccat_namespace }}
+        --set apiserver.image="{{ apiserver_container }}:{{ catalog_version }}"
+        --set apiserver.imagePullPolicy="Never"
+        --set controllerManager.image="{{ controllerManager_container }}:{{ catalog_version }}"
+        --set controllerManager.imagePullPolicy="Never"
+
+  - debug:
+      msg: "Start Command:  '{{ kubernetes_start }}'"
+
+  - name: Starting Service Catalog
+    shell: "{{ kubernetes_start }}"
+
+  - name: Waiting 5 minutes for service-catalog
+    action: >-
+      shell kubectl get deployments -n catalog
+      $(kubectl get deploy -n catalog | grep apiserver | awk '{ print $1 }')
+      -o go-template={% raw %}'{{ .status.availableReplicas }}'{% endraw %}
+    register: apiserver_deployment
+    until: apiserver_deployment.stdout == '1'
+    retries: 30
+    delay: 10

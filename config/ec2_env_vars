@@ -1,0 +1,43 @@
+
+AWS_SSH_KEY_NAME="${AWS_SSH_KEY_NAME:-splice}"
+export AWS_SSH_KEY_NAME
+
+TARGET_DNS_ZONE="${TARGET_DNS_ZONE:-ec2.dog8code.com}"
+export TARGET_DNS_ZONE
+
+OWNERS_NAME="${OWNERS_NAME:-`whoami`}"
+export OWNERS_NAME
+
+AWS_CUSTOM_PREFIX="${AWS_CUSTOM_PREFIX:-$OWNERS_NAME}"
+export AWS_CUSTOM_PREFIX
+
+#####
+# We will tag the created ec2 instance with 'INSTANCE_NAME'
+# A dynamic inventory script will rely on the tag name for finding the instance.
+# The inventory script converts '-' and '.' and transforms them to '_'
+# We are introducing TAG_NAME to do this transform so we can
+# use TAG_NAME as a variable for the group lookup
+#####
+export INSTANCE_NAME="${OWNERS_NAME}-${AWS_CUSTOM_PREFIX}.${TARGET_DNS_ZONE}"
+export INSTANCE_LOOKUP_VALUE=`echo ${INSTANCE_NAME//./_}`
+export INSTANCE_LOOKUP_VALUE=`echo ${INSTANCE_LOOKUP_VALUE//-/_}`
+
+export PROXY_INSTANCE_NAME="${OWNERS_NAME}-proxy-${AWS_CUSTOM_PREFIX}.${TARGET_DNS_ZONE}"
+export PROXY_INSTANCE_LOOKUP_VALUE=`echo ${PROXY_INSTANCE_NAME//./_}`
+export PROXY_INSTANCE_LOOKUP_VALUE=`echo ${PROXY_INSTANCE_LOOKUP_VALUE//-/_}`
+
+export EC2_USER="ec2-user"
+
+export EXTRA_VARS="{\
+\"ssh_key_name\":\"${AWS_SSH_KEY_NAME}\", \
+\"target_dns_zone\":\"${TARGET_DNS_ZONE}\", \
+\"aws_custom_prefix\":\"${AWS_CUSTOM_PREFIX}\", \
+\"instance_name\":\"${INSTANCE_NAME}\", \
+\"instance_lookup_value\":\"${INSTANCE_LOOKUP_VALUE}\", \
+\"proxy_instance_name\":\"${PROXY_INSTANCE_NAME}\", \
+\"proxy_instance_lookup_value\":\"${PROXY_INSTANCE_LOOKUP_VALUE}\", \
+\"cluster\":\"${CLUSTER}\", \
+\"ec2_type\":\"${EC2_TYPE}\" \
+}"
+
+export ANSIBLE_HOST_KEY_CHECKING=False

@@ -1,0 +1,59 @@
+---
+- debug: var=my_ec2_facts
+
+- block:
+    - debug:
+        msg:
+          -  "EC2 Instance Tags:        Name={{ item.tags.Name }}"
+          -  "EC2 Instance ID:          {{ item.id }}"
+          -  "Region:                    {{ aws_region }}"
+      with_items: "{{ my_ec2_facts.instances }}"
+
+    - set_fact:
+        msg: |
+            The cluster has been configured to connect through a squid proxy for outgoing connections.
+
+            Proxy Instance Public IP:  {{ proxy_ec2_facts.instances[0].public_ip_address }}
+            Proxy Instance ID:         {{ proxy_ec2_facts.instances[0].id }}
+            On VPC Proxy URL:          http://{{ proxy_ec2_facts.instances[0].private_ip_address }}:3128
+      when: ec2_use_proxy and my_ec2_facts.instances
+    - debug:
+        msg: "{{ msg.split('\n') }}"
+      when: ec2_use_proxy and my_ec2_facts.instances
+
+    - set_fact:
+        msg: |
+            Hostname:                  {{ hostname }}
+            OpenShift URL:             {{ cluster_url }}
+            SSH Key Name:              {{ ssh_key_name }}
+            Region:                    {{ aws_region }}
+            Next steps:
+            If you have not done already, setup OpenShift with the following script
+              $ ./run_setup_environment.sh'
+            1) Visit https://apiserver-service-catalog.{{ openshift_routing_suffix }}
+            2) Accept the certificate
+            3) Visit https://{{ hostname }}:8443 for the console
+            4) Provision a RDS APB into awsdemo project
+            5) Add to the aws-demo project a Python 3.5 project based off of https://github.com/thesteve0/awsdemo.git
+            6) Click on the python project and select creating binding to the RDS APB
+            7) Redeploy the python project
+            OR
+            For CLI access:
+            oc login --insecure-skip-tls-verify {{ hostname }}:8443 -u {{ cluster_user }} -p {{ cluster_user_password }}
+    - debug:
+        msg: "{{ msg.split('\n') }}"
+  when: my_ec2_facts.instances
+
+- block:
+    - set_fact:
+        msg: |
+            No EC2 Instance Exists with the following attributes
+                EC2 Instance Tags: {{ instance_name }}
+                Hostname:           {{ hostname }}
+                Region:             {{ aws_region }}
+            Next steps:
+                1) Create the EC2 Infrastructure via './run_create_infrastructure.sh'
+                2) Setup OpenShift Environment via './run_setup_environment.sh'
+    - debug:
+        msg: "{{ msg.split('\n') }}"
+  when: not my_ec2_facts.instances
